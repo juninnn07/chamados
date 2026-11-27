@@ -1,7 +1,7 @@
 # Chamados
 
 Sistema de chamados (ordens de serviço) — projeto integrador da formação
-*Desenvolvimento Web e Multiplataforma com .NET*. Estado: Módulo 6.
+*Desenvolvimento Web e Multiplataforma com .NET*. Estado: Módulo 7.
 
 ## Requisitos
 
@@ -21,7 +21,30 @@ dotnet build
 dotnet run --project src/Chamados.Web --launch-profile https
 ```
 
-Portas fixas: http 5080, https 7080. Em Development a base em memória recebe 12 chamados de exemplo (três páginas de 5 na lista).
+Portas fixas: http 5080, https 7080.
+
+### Banco de dados (Módulo 7)
+
+Os chamados ficam num arquivo SQLite, `src/Chamados.Web/chamados.db` (string de conexão `ConnectionStrings:Chamados`). Em Development, a aplicação aplica as migrations pendentes ao iniciar e, se o banco estiver vazio, grava 12 chamados de exemplo. Para recomeçar do zero, pare a aplicação e apague `chamados.db`, `chamados.db-shm` e `chamados.db-wal`. O arquivo não vai para o Git (`.gitignore`).
+
+Migrations no Visual Studio (**Ferramentas › Gerenciador de Pacotes do NuGet › Console do Gerenciador de Pacotes**, com o projeto padrão `Chamados.Infra` e `Chamados.Web` como projeto de inicialização). Os comandos vêm do pacote `Microsoft.EntityFrameworkCore.Tools`, já referenciado no `Chamados.Web`:
+
+```powershell
+Add-Migration NomeDaMudanca
+Update-Database
+Script-Migration -Idempotent   # SQL revisável, para produção
+```
+
+Pela CLI (ferramenta `dotnet-ef`, instalada uma vez com `dotnet tool install --global dotnet-ef --version 10.0.15`):
+
+```bash
+dotnet ef migrations add NomeDaMudanca --project src/Chamados.Infra --startup-project src/Chamados.Web
+dotnet ef database update --project src/Chamados.Infra --startup-project src/Chamados.Web
+```
+
+O projeto já traz duas migrations: `Inicial` (tabelas `Chamados` e `HistoricoChamados`) e `IndicePrioridade` (um índice criado depois, para mostrar o banco evoluindo sem perder dados). Um banco criado só com a primeira recebe a segunda no próximo início.
+
+Em Development, o log mostra cada comando SQL (categoria `Microsoft.EntityFrameworkCore.Database.Command`), com os valores dos parâmetros ocultos.
 
 ### Páginas (Razor Pages)
 
@@ -40,6 +63,7 @@ Portas fixas: http 5080, https 7080. Em Development a base em memória recebe 12
 | --- | --- | --- |
 | `/atendimento` | `Components/Pages/Atendimento.razor` | Fila interativa (InteractiveServer): busca com cancelamento, iniciar, resolver, cancelar, abrir e editar (EditForm) sem recarregar |
 | `/modos` | `Components/Pages/Modos.razor` | O mesmo `Contador` renderizado de forma estática e interativa, lado a lado |
+| `/indicadores` | `Components/Pages/Indicadores.razor` | Totais lidos pela API com o cliente tipado `ChamadosApiCliente` (Módulo 7), com renderização em fluxo |
 
 Razor Pages e Blazor convivem na mesma aplicação: `MapRazorPages()` e `MapRazorComponents<App>()` no `Program.cs`, o mesmo `site.css` e o mesmo `ChamadoServico`.
 
@@ -51,17 +75,18 @@ Componentes acrescentados no Módulo 6: `Formularios/FormularioChamado` (EditFor
 | --- | --- |
 | `GET /api/chamados?status=&prioridadeMinima=&texto=&ordem=` | Lista com filtros e ordenação |
 | `GET /api/chamados/estatisticas` | Totais e tempo médio de resolução |
-| `GET /api/chamados/{id}` | Um chamado |
-| `POST /api/chamados` | Abre chamado (corpo: `{"titulo": "...", "prioridade": "Alta"}`) |
+| `GET /api/chamados/{id}` | Um chamado com o histórico (`DetalheChamadoResposta`) |
+| `POST /api/chamados` | Abre chamado (corpo: `{"titulo": "...", "prioridade": "Alta"}`); corpo inválido → 400 com erros por campo |
 | `POST /api/chamados/{id}/atendimento` | Inicia atendimento (corpo: `{"responsavel": "..."}`) |
 | `PUT /api/chamados/{id}` | Edita (corpo com `versaoEsperada`; versão desatualizada → 409) |
 | `GET /api/status`, `GET /api/ambiente` | Herdadas do Módulo 1 (`/api/ambiente` só em Development) |
 
-Erros de domínio na API voltam como Problem Details (RFC 9457): 400, 404 ou 409.
+Erros de domínio na API voltam como Problem Details (RFC 9457): 400, 404 ou 409. Em Development, o documento OpenAPI fica em `/openapi/v1.json`.
 
 ### Configuração
 
-`Simulacao:LatenciaMs` (0 a 10000) atrasa a listagem para observar carregamento e cancelamento. Em Development vale 600.
+`ConnectionStrings:Chamados` aponta para o arquivo SQLite; `Api:UrlBase` é o endereço que o cliente HTTP da página Indicadores usa: `https://localhost:7080/` no perfil `https`; o perfil `http` troca para `http://localhost:5080/` pela variável `Api__UrlBase` do `launchSettings.json`.
+`Simulacao:LatenciaMs` (0 a 10000) atrasa as consultas para observar carregamento e cancelamento. Em Development vale 300.
 `Simulacao:FalhaNaListagemACada` (0 a 100) faz uma listagem a cada N falhar de propósito, para testar o tratamento de erro; 0 desliga.
 Valor fora da faixa impede a aplicação de iniciar (`ValidateOnStart`). Para testar sem editar arquivo:
 
@@ -78,15 +103,17 @@ No Visual Studio, o perfil **https-falha** (em `launchSettings.json`) já liga `
 
 ## Testar
 
-No Visual Studio: **Teste > Gerenciador de Testes > Executar Todos** (`Ctrl+R, A`). Pela CLI: `dotnet test`.
+No Visual Studio: **Teste > Gerenciador de Testes > Executar Todos** (`Ctrl+R, A`). Pela CLI: `dotnet test`. São 51 testes: 43 do domínio e 8 de integração com o banco.
 
 ## Estrutura
 
 | Projeto | Papel | Depende de |
 | --- | --- | --- |
 | `src/Chamados.Domain` | Entidades, regras e casos de uso | — |
-| `src/Chamados.Web` | Páginas Razor, API JSON, composição e pipeline | Domain |
-| `tests/Chamados.Domain.Tests` | Testes xUnit do domínio | Domain |
+| `src/Chamados.Infra` | EF Core: `ChamadosDbContext`, mapeamento (Fluent API), migrations e `RepositorioChamadosEf` | Domain |
+| `src/Chamados.Web` | Páginas Razor, componentes Blazor, API JSON, composição e pipeline | Domain, Infra |
+| `tests/Chamados.Domain.Tests` | Testes xUnit do domínio (repositório em memória) | Domain |
+| `tests/Chamados.Infra.Tests` | Testes de integração do repositório com SQLite em memória | Infra |
 
 ## Decisões
 
@@ -113,3 +140,11 @@ No Visual Studio: **Teste > Gerenciador de Testes > Executar Todos** (`Ctrl+R, A
 21. **Estado compartilhado em serviço Scoped com evento**: `EstadoFila` liga a página de atendimento ao resumo do cabeçalho sem relação pai e filho. Quem se inscreve no evento cancela a inscrição no `Dispose`.
 22. **JavaScript só no `OnAfterRenderAsync`, em módulo ES isolado**: nada de JS na pré-renderização; o `localStorage` guarda só preferência de tela, nunca dado sensível.
 23. **Fila sem busca duplicada**: `[PersistentState]` leva a lista carregada na pré-renderização para o circuito; cada busca nova cancela a anterior com `CancellationTokenSource`.
+24. **EF Core com SQLite num projeto próprio** (Módulo 7): `Chamados.Infra` implementa `IChamadoRepositorio`; o domínio continua sem referência a EF. A única concessão é um construtor privado sem parâmetros no `Chamado`, para o EF materializar objetos lidos do banco.
+25. **Mapeamento só por Fluent API**, numa classe `IEntityTypeConfiguration` por entidade; o histórico é entidade *owned* (tabela `HistoricoChamados`), carregada e gravada sempre com o chamado.
+26. **Consultas no banco, não em memória**: o repositório recebe o filtro e devolve resumos projetados; `Where`, `ORDER BY`, `LIMIT/OFFSET` e `GROUP BY` viram SQL. O repositório em memória mantém a mesma regra para os testes do domínio.
+27. **Um DbContext por operação, criado por `IDbContextFactory`**: no Blazor Server, um contexto por circuito seria usado por dois componentes ao mesmo tempo, o que o EF não permite.
+28. **Concorrência no banco**: `Versao` é token de concorrência; o UPDATE leva `WHERE Versao = <lida>` e a falha vira `ConcorrenciaException`.
+29. **DateTimeOffset gravado como número** (`DateTimeOffsetToBinaryConverter`): o SQLite não ordena nem compara datas com fuso guardadas como texto. O custo é a precisão: frações abaixo do milissegundo se perdem na gravação.
+30. **API com DTOs, validação automática e OpenAPI**: a entidade nunca é serializada; `AddValidation()` confere as Data Annotations do corpo; o documento OpenAPI é publicado só em Development.
+31. **Toda mudança de esquema por migration**: nada de `EnsureCreated` nem de editar o banco à mão. Se o modelo muda sem migration, o `MigrateAsync` recusa iniciar (`PendingModelChangesWarning`) e um teste de integração (`HasPendingModelChanges`) acusa antes.
